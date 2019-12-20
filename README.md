@@ -1,0 +1,2 @@
+# FiterWord
+Filter sensitive words
