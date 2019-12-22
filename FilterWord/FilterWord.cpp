@@ -11,6 +11,7 @@
 #include <ctime>
 #include <thread>
 #include <sstream>
+#include <cassert>
 #include "IniFile.h"
 
 using namespace std;
@@ -18,12 +19,9 @@ using namespace std;
 typedef unsigned char uchar;
 typedef unsigned int uint;
 
-const char* MASK = "*************************************************";
-const int MAX_WORD_BLOCK = 20;
-
 int Utf8CharLegnth(unsigned char ch)
 {
-	if (ch >= 0 && ch <= 127)
+	if ((ch & 0x80) == 0)
 		return 1;
 	if ((ch & 0xE0) == 0xC0)
 		return 2;
@@ -43,51 +41,71 @@ int Utf8CharLegnth(unsigned char ch)
 
 struct SenWord
 {
+	SenWord() = default;
+
+	explicit SenWord(string word) : word_(word)
+	{
+		blocks_.reserve(20);
+	}
+
 	struct Block
 	{
+		Block(string& block) : block_(block), times_(1) 
+		{
+			head_ = block.substr(0, Utf8CharLegnth(block[0]));
+		}
+
 		string block_;
-		int times_ = 0;
+		string head_;
+		size_t times_ = 0;
 		int senBlockHeadIdx_ = -1;
 	};
 
 	void AddBlock(string& block)
 	{
-		if (blockAmount_ && blocks_[blockAmount_- 1].block_ == block){
-			blocks_[blockAmount_ - 1].times_++;
+		if (!blocks_.empty() && blocks_.back().block_ == block){
+			++blocks_.back().times_;
 		}
 		else{
-			blocks_[blockAmount_].block_ = block;
-			blocks_[blockAmount_].times_ = 1;
-			++blockAmount_;
+			blocks_.emplace_back(block);
 		}
 	}
 
-	int blockAmount_ = 0;
-	Block blocks_[MAX_WORD_BLOCK];
+	int BlockAmount() { return static_cast<int>(blocks_.size()); }
+
+	string word_;
+	vector<Block> blocks_;
 };
+
+vector<SenWord> gSenWords;
+vector<vector<int>> gSenWordBuckets;
+vector<string> gSenBlockHeads;
 
 struct TraceWord
 {
+	TraceWord() = default;
+
+	explicit TraceWord(int senWordIdx) : senWordIdx_(senWordIdx), blockIdx_(0), wordIdx_(0)
+	{
+		assert(senWordIdx < gSenWords.size());
+		auto& senWord = gSenWords[senWordIdx];
+		wordIdxRec_.assign(senWord.blocks_.size(), vector<int>());
+	}
+
 	int senWordIdx_ = -1;
 	int blockIdx_ = -1;
-	size_t wordIdx_ = -1;
-	vector<int> wordIdxRec_[MAX_WORD_BLOCK];
+	int wordIdx_ = -1;
+	vector<vector<int>> wordIdxRec_;
 };
 
-const int SEN_WORDS_AMOUNT = 10000;
-SenWord senWords[SEN_WORDS_AMOUNT];
-vector<vector<int>> senWordBuckets;
-vector<string> senBlockHeads;
-
 ofstream ofslog;
-
 #define EASYLOG ofslog
 
-int GetSenBlockIdx(string& str)
+int GetSenBlockHeadIdx(string& str)
 {
-	auto it = find(senBlockHeads.begin(), senBlockHeads.end(), str);
-	if (it != senBlockHeads.end())
-		return distance(senBlockHeads.begin(), it);
+	auto it = find(gSenBlockHeads.begin(), gSenBlockHeads.end(), str);
+	if (it != gSenBlockHeads.end())
+		return static_cast<int>(distance(gSenBlockHeads.begin(), it));
 	else
 		return -1;
 }
@@ -99,58 +117,66 @@ void InitSenWords()
 	//originWords.push_back("a_c_d");
 	//originWords.push_back("a_c_e_");
 
+	gSenWords.reserve(10000);
+	gSenBlockHeads.reserve(10000);
+
 	ifstream ifs("sensitive.txt");
 	if (!ifs.is_open())
 		return;
 
-	size_t senWordIdx = 0;
 	string word;
 	set<string> blockHeads;
 	while (getline(ifs, word)) {
+		if (word.empty() 
+			|| all_of(word.begin(), word.end(), [](uchar c)->bool { return isspace(c); }))
+			continue;
+
+		gSenWords.emplace_back(word);
+		auto& senWord = gSenWords.back();
+
 		size_t beg = 0;
-		for (size_t idx = 0; idx < word.length(); ++idx) {
-			if(word[idx] == '_'){
+		for (size_t idx = 0; idx <= word.length(); ++idx) {
+			if(idx == word.length() || word[idx] == '_') {
 				if(idx > beg){
-					string block = word.substr(beg, idx - beg);
+					string block(word.begin()+beg, word.begin()+idx);
+					if (block.empty() 
+						|| all_of(block.begin(), block.end(), [](uchar c)->bool { return isspace(c); })) {
+						beg = idx + 1;
+						continue;
+					}
+
 					blockHeads.insert(block.substr(0, Utf8CharLegnth(block[0])));
-					senWords[senWordIdx].AddBlock(block);
+					senWord.AddBlock(block);
 				}
 				beg = idx + 1;
 			}
 		}
-		if(beg < word.length()){
-			string block = word.substr(beg, word.length() - beg);
-			blockHeads.insert(block.substr(0, Utf8CharLegnth(block[0])));
-			senWords[senWordIdx].AddBlock(block);
-		}
-
-		++senWordIdx;
 	}
 
 	ifs.close();
 
-	copy(blockHeads.begin(), blockHeads.end(), back_inserter(senBlockHeads));
+	copy(blockHeads.begin(), blockHeads.end(), back_inserter(gSenBlockHeads));
 
-	senWordBuckets.assign(senBlockHeads.size(), vector<int>());
-	for (size_t i = 0; i < senWordIdx; ++i) {
-		auto& senWord = senWords[i];
+	gSenWordBuckets.assign(gSenBlockHeads.size(), vector<int>());
+	for (size_t i = 0; i < gSenWords.size(); ++i){
+		auto& senWord = gSenWords[i];
 
-		for(int j = 0; j < senWord.blockAmount_; ++j){
+		for(int j = 0; j < senWord.BlockAmount(); ++j){
 			auto& block = senWord.blocks_[j];
 
-			auto it = find(senBlockHeads.begin(), senBlockHeads.end(), block.block_.substr(0, Utf8CharLegnth(block.block_[0])));
-			if (it != senBlockHeads.end()) {
-				block.senBlockHeadIdx_ = distance(senBlockHeads.begin(), it);
+			auto it = find(gSenBlockHeads.begin(), gSenBlockHeads.end(), block.head_);
+			if (it != gSenBlockHeads.end()) {
+				block.senBlockHeadIdx_ = static_cast<int>(distance(gSenBlockHeads.begin(), it));
 
 				if (j == 0) {
-					senWordBuckets[block.senBlockHeadIdx_].push_back(i);
+					gSenWordBuckets[block.senBlockHeadIdx_].push_back(static_cast<int>(i));
 				}
 			}
 		}
 	}
 
-	EASYLOG << "Load sensitive word amount: " << senWordIdx << endl;
-	EASYLOG << "Load sensitive block amount: " << senBlockHeads.size() << endl;
+	EASYLOG << "Load sensitive word amount: " << gSenWords.size() << endl;
+	EASYLOG << "Load sensitive block heads amount: " << gSenBlockHeads.size() << endl;
 }
 
 void FilterWord(string& src, string& dest)
@@ -160,45 +186,45 @@ void FilterWord(string& src, string& dest)
 	vector<TraceWord> traceWords;
 	vector<vector<int>> traceWordBuckets;
 	vector<vector<int>> traceNextWordBuckets;
-	traceWordBuckets.assign(senBlockHeads.size(), vector<int>());
-	traceNextWordBuckets.assign(senBlockHeads.size(), vector<int>());
+	traceWordBuckets.assign(gSenBlockHeads.size(), vector<int>());
+	traceNextWordBuckets.assign(gSenBlockHeads.size(), vector<int>());
 
 	for (size_t i = 0; i < dest.length(); i += Utf8CharLegnth(dest[i])) {
-		set<int> pickIdx;
+		set<size_t> pickIdx;
 
-		string subWord = string(dest.begin()+i, dest.begin() + i + Utf8CharLegnth(dest[i]));
+		string subWord(dest.begin()+i, dest.begin() + i + Utf8CharLegnth(dest[i]));
 
-		int senBlockIdx = GetSenBlockIdx(subWord);
-		if(senBlockIdx >= 0){
-			auto& traceBucket = traceWordBuckets[senBlockIdx];
+		int headIdx = GetSenBlockHeadIdx(subWord);
+		if(headIdx >= 0){
+			auto& traceBucket = traceWordBuckets[headIdx];
 			for (auto idx : traceBucket) {
 				auto& traceWord = traceWords[idx];
-				auto& senWord = senWords[traceWord.senWordIdx_];
+				auto& senWord = gSenWords[traceWord.senWordIdx_];
 
 				if (traceWord.wordIdx_ <= i
 					&& dest.length() - i >= senWord.blocks_[traceWord.blockIdx_].block_.length()
 					&& dest.substr(i, senWord.blocks_[traceWord.blockIdx_].block_.length()) == senWord.blocks_[traceWord.blockIdx_].block_) {
-					traceWord.wordIdx_ = i + senWord.blocks_[traceWord.blockIdx_].block_.length();
-					traceWord.wordIdxRec_[traceWord.blockIdx_].push_back(i);
+					traceWord.wordIdx_ = static_cast<int>(i + senWord.blocks_[traceWord.blockIdx_].block_.length());
+					traceWord.wordIdxRec_[traceWord.blockIdx_].push_back(static_cast<int>(i));
 
 					if (traceWord.blockIdx_ == 0)
 						pickIdx.insert(traceWord.senWordIdx_);
 
-					if (traceWord.blockIdx_ + 1 < senWord.blockAmount_
-						&& traceWord.wordIdxRec_[traceWord.blockIdx_].size() == senWord.blocks_[traceWord.blockIdx_].times_){
+					if (traceWord.blockIdx_ + 1 < senWord.BlockAmount()
+						&& traceWord.wordIdxRec_[traceWord.blockIdx_].size() == senWord.blocks_[traceWord.blockIdx_].times_) {
 						traceNextWordBuckets[senWord.blocks_[traceWord.blockIdx_+1].senBlockHeadIdx_].push_back(idx);
 					}
 				}
 			}
 
-			auto& traceNextBucket = traceNextWordBuckets[senBlockIdx];
+			auto& traceNextBucket = traceNextWordBuckets[headIdx];
 			vector<int> eraseIdx;
 			for (auto idx : traceNextBucket) {
 				auto& traceWord = traceWords[idx];
-				auto& senWord = senWords[traceWord.senWordIdx_];
+				auto& senWord = gSenWords[traceWord.senWordIdx_];
 
 				if (traceWord.wordIdx_ <= i
-					&& traceWord.blockIdx_ + 1 < senWord.blockAmount_
+					&& traceWord.blockIdx_ + 1 < senWord.BlockAmount()
 					&& dest.length() - i >= senWord.blocks_[traceWord.blockIdx_ + 1].block_.length()
 					&& dest.substr(i, senWord.blocks_[traceWord.blockIdx_ + 1].block_.length()) == senWord.blocks_[traceWord.blockIdx_ + 1].block_) {
 					auto it = find(traceWordBuckets[senWord.blocks_[traceWord.blockIdx_].senBlockHeadIdx_].begin(),
@@ -212,8 +238,8 @@ void FilterWord(string& src, string& dest)
 					eraseIdx.push_back(idx);
 
 					traceWord.blockIdx_ += 1;
-					traceWord.wordIdx_ = i + senWord.blocks_[traceWord.blockIdx_].block_.length();
-					traceWord.wordIdxRec_[traceWord.blockIdx_].push_back(i);
+					traceWord.wordIdx_ = static_cast<int>(i + senWord.blocks_[traceWord.blockIdx_].block_.length());
+					traceWord.wordIdxRec_[traceWord.blockIdx_].push_back(static_cast<int>(i));
 				}
 			}
 
@@ -226,35 +252,33 @@ void FilterWord(string& src, string& dest)
 
 			for (auto idx : eraseIdx) {
 				auto& traceWord = traceWords[idx];
-				auto& senWord = senWords[traceWord.senWordIdx_];
+				auto& senWord = gSenWords[traceWord.senWordIdx_];
 
-				if (traceWord.blockIdx_ + 1 < senWord.blockAmount_) {
+				if (traceWord.blockIdx_ + 1 < senWord.BlockAmount()) {
 					traceNextWordBuckets[senWord.blocks_[traceWord.blockIdx_ + 1].senBlockHeadIdx_].push_back(idx);
 				}
 			}
 
-			auto& bucket = senWordBuckets[senBlockIdx];
+			auto& bucket = gSenWordBuckets[headIdx];
 			for (auto idx : bucket) {
-				auto& senWord = senWords[idx];
+				auto& senWord = gSenWords[idx];
 
 				if (pickIdx.count(idx))
 					continue;
 
 				if (dest.length() - i >= senWord.blocks_[0].block_.length()
 					&& dest.substr(i, senWord.blocks_[0].block_.length()) == senWord.blocks_[0].block_) {
-					TraceWord traceWord;
-					traceWord.senWordIdx_ = idx;
-					traceWord.blockIdx_ = 0;
-					traceWord.wordIdx_ = i + senWord.blocks_[0].block_.length();
-					traceWord.wordIdxRec_[traceWord.blockIdx_].push_back(i);
+					TraceWord traceWord(idx);
+					traceWord.wordIdx_ = static_cast<int>(i + senWord.blocks_[0].block_.length());
+					traceWord.wordIdxRec_[traceWord.blockIdx_].push_back(static_cast<int>(i));
 
 					traceWords.push_back(traceWord);
 
-					traceWordBuckets[senBlockIdx].push_back(traceWords.size() - 1);
+					traceWordBuckets[headIdx].push_back(static_cast<int>(traceWords.size() - 1));
 
-					if (senWord.blockAmount_ > 1
-						&& static_cast<int>(traceWord.wordIdxRec_[traceWord.blockIdx_].size()) >= senWord.blocks_[traceWord.blockIdx_].times_){
-						traceNextWordBuckets[senWord.blocks_[traceWord.blockIdx_+1].senBlockHeadIdx_].push_back(traceWords.size() - 1);
+					if (senWord.BlockAmount() > 1
+						&& traceWord.wordIdxRec_[traceWord.blockIdx_].size() >= senWord.blocks_[traceWord.blockIdx_].times_){
+						traceNextWordBuckets[senWord.blocks_[traceWord.blockIdx_+1].senBlockHeadIdx_].push_back(static_cast<int>(traceWords.size() - 1));
 					}
 				}
 			}
@@ -262,14 +286,15 @@ void FilterWord(string& src, string& dest)
 	}
 
 	for (auto& traceWord : traceWords) {
-		auto& senWord = senWords[traceWord.senWordIdx_];
+		auto& senWord = gSenWords[traceWord.senWordIdx_];
 
-		if (traceWord.blockIdx_ + 1 >= senWord.blockAmount_) {
-			for (int i = 0; i < senWord.blockAmount_; ++i) {
+		if (traceWord.blockIdx_ + 1 >= senWord.BlockAmount()
+			&& traceWord.wordIdxRec_[traceWord.blockIdx_].size() >= senWord.blocks_[traceWord.blockIdx_].times_) {
+			for (int i = 0; i < senWord.BlockAmount(); ++i) {
 				for(auto idx : traceWord.wordIdxRec_[i]){
 					dest.replace(dest.begin() + idx,
 						dest.begin() + idx + senWord.blocks_[i].block_.length(),
-						MASK, senWord.blocks_[i].block_.length());
+						senWord.blocks_[i].block_.length(), '*');
 				}
 			}
 		}
