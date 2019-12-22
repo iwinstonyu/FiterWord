@@ -103,8 +103,8 @@ ofstream ofslog;
 
 int GetSenBlockHeadIdx(string& str)
 {
-	auto it = find(gSenBlockHeads.begin(), gSenBlockHeads.end(), str);
-	if (it != gSenBlockHeads.end())
+	auto it = lower_bound(gSenBlockHeads.begin(), gSenBlockHeads.end(), str);
+	if (it != gSenBlockHeads.end() && *it == str)
 		return static_cast<int>(distance(gSenBlockHeads.begin(), it));
 	else
 		return -1;
@@ -164,8 +164,8 @@ void InitSenWords()
 		for(int j = 0; j < senWord.BlockAmount(); ++j){
 			auto& block = senWord.blocks_[j];
 
-			auto it = find(gSenBlockHeads.begin(), gSenBlockHeads.end(), block.head_);
-			if (it != gSenBlockHeads.end()) {
+			auto it = lower_bound(gSenBlockHeads.begin(), gSenBlockHeads.end(), block.head_);
+			if (it != gSenBlockHeads.end() && *it == block.head_) {
 				block.senBlockHeadIdx_ = static_cast<int>(distance(gSenBlockHeads.begin(), it));
 
 				if (j == 0) {
