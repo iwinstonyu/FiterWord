@@ -18,5 +18,3 @@ timeout 2
 md %generator_ul%
 cd %generator_ul%
 cmake -G %GENERATOR% ../..
-
-pause
