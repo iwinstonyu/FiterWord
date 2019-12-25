@@ -19,8 +19,6 @@
 //	along with this program.  If not, see <http://www.gnu.org/licenses/>.
 //
 
-#include "pch.h"
-
 #include "IniFile.h"
 #include <fstream>
 #include <limits.h>

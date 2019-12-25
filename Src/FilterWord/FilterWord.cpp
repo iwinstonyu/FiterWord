@@ -1,7 +1,6 @@
 ﻿// FilterWord.cpp : 此文件包含 "main" 函数。程序执行将在此处开始并结束。
 //
 
-#include "pch.h"
 #include <iostream>
 #include <vector>
 #include <string>
@@ -53,12 +52,15 @@ struct SenWord
 		Block(string& block) : block_(block), times_(1) 
 		{
 			head_ = block.substr(0, Utf8CharLegnth(block[0]));
+			tail_ = block.substr(Utf8CharLegnth(block[0]), block.length() - Utf8CharLegnth(block[0]));
 		}
 
 		string block_;
 		string head_;
+		string tail_;
 		size_t times_ = 0;
 		int senBlockHeadIdx_ = -1;
+		int senBlockIdx_ = -1;
 	};
 
 	void AddBlock(string& block)
@@ -80,6 +82,7 @@ struct SenWord
 vector<SenWord> gSenWords;
 vector<vector<int>> gSenWordBuckets;
 vector<string> gSenBlockHeads;
+vector<string> gSenBlocks;
 
 struct TraceWord
 {
@@ -126,6 +129,7 @@ void InitSenWords()
 
 	string word;
 	set<string> blockHeads;
+	set<string> blocks;
 	while (getline(ifs, word)) {
 		if (word.empty() 
 			|| all_of(word.begin(), word.end(), [](uchar c)->bool { return isspace(c); }))
@@ -146,6 +150,7 @@ void InitSenWords()
 					}
 
 					blockHeads.insert(block.substr(0, Utf8CharLegnth(block[0])));
+					blocks.insert(block);
 					senWord.AddBlock(block);
 				}
 				beg = idx + 1;
@@ -156,6 +161,7 @@ void InitSenWords()
 	ifs.close();
 
 	copy(blockHeads.begin(), blockHeads.end(), back_inserter(gSenBlockHeads));
+	copy(blocks.begin(), blocks.end(), back_inserter(gSenBlocks));
 
 	gSenWordBuckets.assign(gSenBlockHeads.size(), vector<int>());
 	for (size_t i = 0; i < gSenWords.size(); ++i){
@@ -164,12 +170,20 @@ void InitSenWords()
 		for(int j = 0; j < senWord.BlockAmount(); ++j){
 			auto& block = senWord.blocks_[j];
 
-			auto it = lower_bound(gSenBlockHeads.begin(), gSenBlockHeads.end(), block.head_);
-			if (it != gSenBlockHeads.end() && *it == block.head_) {
-				block.senBlockHeadIdx_ = static_cast<int>(distance(gSenBlockHeads.begin(), it));
+			{
+				auto it = lower_bound(gSenBlockHeads.begin(), gSenBlockHeads.end(), block.head_);
+				if (it != gSenBlockHeads.end() && *it == block.head_) {
+					block.senBlockHeadIdx_ = static_cast<int>(distance(gSenBlockHeads.begin(), it));
 
-				if (j == 0) {
-					gSenWordBuckets[block.senBlockHeadIdx_].push_back(static_cast<int>(i));
+					if (j == 0) {
+						gSenWordBuckets[block.senBlockHeadIdx_].push_back(static_cast<int>(i));
+					}
+				}
+			}
+			{
+				auto it = lower_bound(gSenBlocks.begin(), gSenBlocks.end(), block.block_);
+				if (it != gSenBlocks.end() && *it == block.block_) {
+					block.senBlockIdx_ = static_cast<int>(distance(gSenBlocks.begin(), it));
 				}
 			}
 		}
@@ -192,7 +206,8 @@ void FilterWord(string& src, string& dest)
 	for (size_t i = 0; i < dest.length(); i += Utf8CharLegnth(dest[i])) {
 		set<size_t> pickIdx;
 
-		string subWord(dest.begin()+i, dest.begin() + i + Utf8CharLegnth(dest[i]));
+		size_t nextCharIdx = i + Utf8CharLegnth(dest[i]);
+		string subWord(dest.begin()+i, dest.begin() + nextCharIdx);
 
 		int headIdx = GetSenBlockHeadIdx(subWord);
 		if(headIdx >= 0){
@@ -202,8 +217,10 @@ void FilterWord(string& src, string& dest)
 				auto& senWord = gSenWords[traceWord.senWordIdx_];
 
 				if (traceWord.wordIdx_ <= i
-					&& dest.length() - i >= senWord.blocks_[traceWord.blockIdx_].block_.length()
-					&& dest.substr(i, senWord.blocks_[traceWord.blockIdx_].block_.length()) == senWord.blocks_[traceWord.blockIdx_].block_) {
+					&& (senWord.blocks_[traceWord.blockIdx_].tail_.empty() 
+						|| (dest.length() - nextCharIdx >= senWord.blocks_[traceWord.blockIdx_].tail_.length()
+							&& !strncmp(dest.c_str() + nextCharIdx, senWord.blocks_[traceWord.blockIdx_].tail_.c_str(), senWord.blocks_[traceWord.blockIdx_].tail_.length())))) {
+							//&& dest.substr(nextCharIdx, senWord.blocks_[traceWord.blockIdx_].tail_.length()) == senWord.blocks_[traceWord.blockIdx_].tail_))) {
 					traceWord.wordIdx_ = static_cast<int>(i + senWord.blocks_[traceWord.blockIdx_].block_.length());
 					traceWord.wordIdxRec_[traceWord.blockIdx_].push_back(static_cast<int>(i));
 
@@ -219,14 +236,16 @@ void FilterWord(string& src, string& dest)
 
 			auto& traceNextBucket = traceNextWordBuckets[headIdx];
 			vector<int> eraseIdx;
+			vector<int> reserveIdx;
 			for (auto idx : traceNextBucket) {
 				auto& traceWord = traceWords[idx];
 				auto& senWord = gSenWords[traceWord.senWordIdx_];
 
 				if (traceWord.wordIdx_ <= i
 					&& traceWord.blockIdx_ + 1 < senWord.BlockAmount()
-					&& dest.length() - i >= senWord.blocks_[traceWord.blockIdx_ + 1].block_.length()
-					&& dest.substr(i, senWord.blocks_[traceWord.blockIdx_ + 1].block_.length()) == senWord.blocks_[traceWord.blockIdx_ + 1].block_) {
+					&& dest.length() - nextCharIdx >= senWord.blocks_[traceWord.blockIdx_ + 1].tail_.length()
+					&& !strncmp(dest.c_str() + nextCharIdx, senWord.blocks_[traceWord.blockIdx_ + 1].tail_.c_str(), senWord.blocks_[traceWord.blockIdx_ + 1].tail_.length())) {
+					//&& dest.substr(i, senWord.blocks_[traceWord.blockIdx_ + 1].block_.length()) == senWord.blocks_[traceWord.blockIdx_ + 1].block_) {
 					auto it = find(traceWordBuckets[senWord.blocks_[traceWord.blockIdx_].senBlockHeadIdx_].begin(),
 						traceWordBuckets[senWord.blocks_[traceWord.blockIdx_].senBlockHeadIdx_].end(),
 						idx);
@@ -241,13 +260,13 @@ void FilterWord(string& src, string& dest)
 					traceWord.wordIdx_ = static_cast<int>(i + senWord.blocks_[traceWord.blockIdx_].block_.length());
 					traceWord.wordIdxRec_[traceWord.blockIdx_].push_back(static_cast<int>(i));
 				}
+				else{
+					reserveIdx.push_back(idx);
+				}
 			}
 
-			for (auto idx : eraseIdx) {
-				auto it = find(traceNextBucket.begin(),
-					traceNextBucket.end(), idx);
-				if (it != traceNextBucket.end())
-					traceNextBucket.erase(it);
+			if(!eraseIdx.empty()){
+				traceNextBucket = reserveIdx;
 			}
 
 			for (auto idx : eraseIdx) {
@@ -268,11 +287,11 @@ void FilterWord(string& src, string& dest)
 
 				if (dest.length() - i >= senWord.blocks_[0].block_.length()
 					&& dest.substr(i, senWord.blocks_[0].block_.length()) == senWord.blocks_[0].block_) {
-					TraceWord traceWord(idx);
+					traceWords.emplace_back(idx);
+
+					auto& traceWord = traceWords.back();
 					traceWord.wordIdx_ = static_cast<int>(i + senWord.blocks_[0].block_.length());
 					traceWord.wordIdxRec_[traceWord.blockIdx_].push_back(static_cast<int>(i));
-
-					traceWords.push_back(traceWord);
 
 					traceWordBuckets[headIdx].push_back(static_cast<int>(traceWords.size() - 1));
 
@@ -285,13 +304,34 @@ void FilterWord(string& src, string& dest)
 		}
 	}
 
+// 	vector<size_t> marks;
+// 	marks.assign(dest.size(), 0);
+// 	for (auto& traceWord : traceWords) {
+// 		auto& senWord = gSenWords[traceWord.senWordIdx_];
+// 
+// 		if (traceWord.blockIdx_ + 1 >= senWord.BlockAmount()
+// 			&& traceWord.wordIdxRec_[traceWord.blockIdx_].size() >= senWord.blocks_[traceWord.blockIdx_].times_) {
+// 			for (int i = 0; i < senWord.BlockAmount(); ++i) {
+// 				for(auto idx : traceWord.wordIdxRec_[i]) {
+// 					if (marks[idx] >= senWord.blocks_[i].block_.length())
+// 						continue;
+// 					else
+// 						marks[idx] = senWord.blocks_[i].block_.length();
+// 				
+// 					dest.replace(dest.begin() + idx,
+// 						dest.begin() + idx + senWord.blocks_[i].block_.length(),
+// 						senWord.blocks_[i].block_.length(), '*');
+// 				}
+// 			}
+// 		}
+// 	}
 	for (auto& traceWord : traceWords) {
 		auto& senWord = gSenWords[traceWord.senWordIdx_];
 
 		if (traceWord.blockIdx_ + 1 >= senWord.BlockAmount()
 			&& traceWord.wordIdxRec_[traceWord.blockIdx_].size() >= senWord.blocks_[traceWord.blockIdx_].times_) {
 			for (int i = 0; i < senWord.BlockAmount(); ++i) {
-				for(auto idx : traceWord.wordIdxRec_[i]){
+				for (auto idx : traceWord.wordIdxRec_[i]) {
 					dest.replace(dest.begin() + idx,
 						dest.begin() + idx + senWord.blocks_[i].block_.length(),
 						senWord.blocks_[i].block_.length(), '*');
