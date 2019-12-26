@@ -79,6 +79,158 @@ struct SenWord
 	vector<Block> blocks_;
 };
 
+struct BucketNode
+{
+	BucketNode() = default;
+	BucketNode(int idx, int headIdx) : idx_(idx), headIdx_(headIdx) {}
+	void Reset() {
+		preNode_ = nullptr; nextNode_ = nullptr; idx_ = -1; headIdx_ = -1;
+	}
+
+	BucketNode* preNode_ = nullptr;
+	BucketNode* nextNode_ = nullptr;
+	int idx_ = -1;
+	int headIdx_ = -1;
+};
+
+struct RecycleNodes
+{
+	static const int RESERVE_NODES_SIZE = 1000;
+
+	RecycleNodes()
+	{
+		reserveNodesPtr_ = new BucketNode[RESERVE_NODES_SIZE];
+
+		for (size_t i = 0; i < RESERVE_NODES_SIZE; ++i) {
+			if (i > 0) {
+				reserveNodesPtr_[i].preNode_ = &(reserveNodesPtr_[i - 1]);
+			}
+			if (i + 1 < RESERVE_NODES_SIZE) {
+				reserveNodesPtr_[i].nextNode_ = &(reserveNodesPtr_[i + 1]);
+			}
+		}
+		recyclePtr_ = &(reserveNodesPtr_[RESERVE_NODES_SIZE - 1]);
+	}
+
+	~RecycleNodes() 
+	{
+		auto nodePtr = recyclePtr_;
+		BucketNode* preNodePtr = nullptr;
+		while (nodePtr) {
+			preNodePtr = nodePtr->preNode_;
+			if(nodePtr < &(reserveNodesPtr_[0]) || nodePtr > &(reserveNodesPtr_[RESERVE_NODES_SIZE-1]))
+				delete nodePtr;
+			nodePtr = preNodePtr;
+		}
+		recyclePtr_ = nullptr;
+	}
+
+	BucketNode* NewNode(int idx, int headIdx)
+	{
+		BucketNode* nodePtr = nullptr;
+		if (recyclePtr_) {
+			nodePtr = recyclePtr_;
+			recyclePtr_ = recyclePtr_->preNode_;
+			if(recyclePtr_)
+				recyclePtr_->nextNode_ = nullptr;
+
+			nodePtr->Reset();
+			nodePtr->idx_ = idx;
+			nodePtr->headIdx_ = headIdx;
+		}
+		else {
+			nodePtr = new BucketNode(idx, headIdx);
+		}
+
+		return nodePtr;
+	}
+
+	void DelNode(BucketNode* nodePtr)
+	{
+		nodePtr->Reset();
+		if (recyclePtr_) {
+			recyclePtr_->nextNode_ = nodePtr;
+			nodePtr->preNode_ = recyclePtr_;
+			recyclePtr_ = nodePtr;
+		}
+		else {
+			recyclePtr_ = nodePtr;
+		}
+	}
+
+	BucketNode* recyclePtr_ = nullptr;
+	BucketNode* reserveNodesPtr_ = nullptr;
+};
+
+struct BucketNodeList
+{
+	BucketNodeList(RecycleNodes& recycleNodes) :recycleNodesPtr_(&recycleNodes) {}
+	
+	~BucketNodeList()
+	{
+		auto nodePtr = tailPtr_;
+		BucketNode* preNodePtr = nullptr;
+		while (nodePtr) {
+			preNodePtr = nodePtr->preNode_;
+			recycleNodesPtr_->DelNode(nodePtr);
+			nodePtr = preNodePtr;
+		}
+		headPtr_ = nullptr;
+		tailPtr_ = nullptr;
+	}
+
+	BucketNode* AddNode(int idx, int headIdx)
+	{
+		++amount_;
+
+		BucketNode* nodePtr = recycleNodesPtr_->NewNode(idx, headIdx);
+
+		if (headPtr_ == nullptr)
+			headPtr_ = nodePtr;
+
+		if (tailPtr_ == nullptr) {
+			tailPtr_ = nodePtr;
+		}
+		else {
+			tailPtr_->nextNode_ = nodePtr;
+			nodePtr->preNode_ = tailPtr_;
+			tailPtr_ = nodePtr;
+		}
+
+		return nodePtr;
+	}
+
+	void DelNode(BucketNode* nodePtr)
+	{
+		--amount_;
+
+		assert(nodePtr);
+		assert(nodePtr->idx_ >= 0);
+
+// 		auto it = headPtr_;
+// 		while (it && it != nodePtr) it = it->nextNode_;
+// 
+// 		if (it != nodePtr)
+// 			return;
+
+		if(nodePtr == headPtr_)
+			headPtr_ = nodePtr->nextNode_;
+		if (nodePtr == tailPtr_)
+			tailPtr_ = nodePtr->preNode_;
+		if (nodePtr->preNode_)
+			nodePtr->preNode_->nextNode_ = nodePtr->nextNode_;
+		if (nodePtr->nextNode_)
+			nodePtr->nextNode_->preNode_ = nodePtr->preNode_;
+
+		recycleNodesPtr_->DelNode(nodePtr);
+	}
+
+	BucketNode* headPtr_ = nullptr;
+	BucketNode* tailPtr_ = nullptr;
+	RecycleNodes* recycleNodesPtr_;
+	int amount_ = 0;
+};
+
 vector<SenWord> gSenWords;
 vector<vector<int>> gSenWordBuckets;
 vector<string> gSenBlockHeads;
@@ -90,7 +242,7 @@ struct TraceWord
 
 	explicit TraceWord(int senWordIdx) : senWordIdx_(senWordIdx), blockIdx_(0), wordIdx_(0)
 	{
-		assert(senWordIdx < gSenWords.size());
+		assert(senWordIdx < static_cast<int>(gSenWords.size()));
 		auto& senWord = gSenWords[senWordIdx];
 		wordIdxRec_.assign(senWord.blocks_.size(), vector<int>());
 	}
@@ -99,6 +251,7 @@ struct TraceWord
 	int blockIdx_ = -1;
 	int wordIdx_ = -1;
 	vector<vector<int>> wordIdxRec_;
+	BucketNode* traceNodePtr_ = nullptr;
 };
 
 ofstream ofslog;
@@ -193,88 +346,102 @@ void InitSenWords()
 	EASYLOG << "Load sensitive block heads amount: " << gSenBlockHeads.size() << endl;
 }
 
-void FilterWord(string& src, string& dest)
+void FilterWord(string& src, string& dest, RecycleNodes& recycleNodes)
 {
+
 	dest = src;
 
 	vector<TraceWord> traceWords;
-	vector<vector<int>> traceWordBuckets;
-	vector<vector<int>> traceNextWordBuckets;
-	traceWordBuckets.assign(gSenBlockHeads.size(), vector<int>());
-	traceNextWordBuckets.assign(gSenBlockHeads.size(), vector<int>());
+	traceWords.reserve(1000);
+	vector<BucketNodeList> traceWordBuckets;
+	traceWordBuckets.assign(gSenBlockHeads.size(), BucketNodeList(recycleNodes));
+	vector<BucketNodeList> traceNextWordBuckets;
+	traceNextWordBuckets.assign(gSenBlockHeads.size(), BucketNodeList(recycleNodes));
 
 	for (size_t i = 0; i < dest.length(); i += Utf8CharLegnth(dest[i])) {
+		assert(i <= 84065);
 		set<size_t> pickIdx;
 
 		size_t nextCharIdx = i + Utf8CharLegnth(dest[i]);
 		string subWord(dest.begin()+i, dest.begin() + nextCharIdx);
 
 		int headIdx = GetSenBlockHeadIdx(subWord);
-		if(headIdx >= 0){
-			auto& traceBucket = traceWordBuckets[headIdx];
-			for (auto idx : traceBucket) {
-				auto& traceWord = traceWords[idx];
-				auto& senWord = gSenWords[traceWord.senWordIdx_];
+		if (headIdx >= 0) {
+			{
+				auto nodePtr = traceWordBuckets[headIdx].headPtr_;
+				while (nodePtr) {
+					auto& traceWord = traceWords[nodePtr->idx_];
+					auto& senWord = gSenWords[traceWord.senWordIdx_];
 
-				if (traceWord.wordIdx_ <= i
-					&& (senWord.blocks_[traceWord.blockIdx_].tail_.empty() 
-						|| (dest.length() - nextCharIdx >= senWord.blocks_[traceWord.blockIdx_].tail_.length()
-							&& !strncmp(dest.c_str() + nextCharIdx, senWord.blocks_[traceWord.blockIdx_].tail_.c_str(), senWord.blocks_[traceWord.blockIdx_].tail_.length())))) {
-							//&& dest.substr(nextCharIdx, senWord.blocks_[traceWord.blockIdx_].tail_.length()) == senWord.blocks_[traceWord.blockIdx_].tail_))) {
-					traceWord.wordIdx_ = static_cast<int>(i + senWord.blocks_[traceWord.blockIdx_].block_.length());
-					traceWord.wordIdxRec_[traceWord.blockIdx_].push_back(static_cast<int>(i));
+					if (traceWord.wordIdx_ <= static_cast<int>(i)
+						&& (senWord.blocks_[traceWord.blockIdx_].tail_.empty()
+							|| (dest.length() - nextCharIdx >= senWord.blocks_[traceWord.blockIdx_].tail_.length()
+								&& !strncmp(dest.c_str() + nextCharIdx, senWord.blocks_[traceWord.blockIdx_].tail_.c_str(), senWord.blocks_[traceWord.blockIdx_].tail_.length())))) {
+						//&& dest.substr(nextCharIdx, senWord.blocks_[traceWord.blockIdx_].tail_.length()) == senWord.blocks_[traceWord.blockIdx_].tail_))) {
+						traceWord.wordIdx_ = static_cast<int>(i + senWord.blocks_[traceWord.blockIdx_].block_.length());
+						traceWord.wordIdxRec_[traceWord.blockIdx_].push_back(static_cast<int>(i));
+						assert(static_cast<int>(i) <= 84065);
 
-					if (traceWord.blockIdx_ == 0)
-						pickIdx.insert(traceWord.senWordIdx_);
+						if (traceWord.blockIdx_ == 0)
+							pickIdx.insert(traceWord.senWordIdx_);
 
-					if (traceWord.blockIdx_ + 1 < senWord.BlockAmount()
-						&& traceWord.wordIdxRec_[traceWord.blockIdx_].size() == senWord.blocks_[traceWord.blockIdx_].times_) {
-						traceNextWordBuckets[senWord.blocks_[traceWord.blockIdx_+1].senBlockHeadIdx_].push_back(idx);
+						if (traceWord.blockIdx_ + 1 < senWord.BlockAmount()
+							&& traceWord.wordIdxRec_[traceWord.blockIdx_].size() == senWord.blocks_[traceWord.blockIdx_].times_) {
+							traceNextWordBuckets[senWord.blocks_[traceWord.blockIdx_ + 1].senBlockHeadIdx_].AddNode(nodePtr->idx_, senWord.blocks_[traceWord.blockIdx_ + 1].senBlockHeadIdx_);
+						}
 					}
+
+					nodePtr = nodePtr->nextNode_;
 				}
 			}
 
-			auto& traceNextBucket = traceNextWordBuckets[headIdx];
 			vector<int> eraseIdx;
 			vector<int> reserveIdx;
-			for (auto idx : traceNextBucket) {
-				auto& traceWord = traceWords[idx];
+			auto nextNodePtr = traceNextWordBuckets[headIdx].headPtr_;
+			while (nextNodePtr) {
+				auto& traceWord = traceWords[nextNodePtr->idx_];
 				auto& senWord = gSenWords[traceWord.senWordIdx_];
 
-				if (traceWord.wordIdx_ <= i
+				if (traceWord.wordIdx_ <= static_cast<int>(i)
 					&& traceWord.blockIdx_ + 1 < senWord.BlockAmount()
 					&& dest.length() - nextCharIdx >= senWord.blocks_[traceWord.blockIdx_ + 1].tail_.length()
 					&& !strncmp(dest.c_str() + nextCharIdx, senWord.blocks_[traceWord.blockIdx_ + 1].tail_.c_str(), senWord.blocks_[traceWord.blockIdx_ + 1].tail_.length())) {
 					//&& dest.substr(i, senWord.blocks_[traceWord.blockIdx_ + 1].block_.length()) == senWord.blocks_[traceWord.blockIdx_ + 1].block_) {
-					auto it = find(traceWordBuckets[senWord.blocks_[traceWord.blockIdx_].senBlockHeadIdx_].begin(),
-						traceWordBuckets[senWord.blocks_[traceWord.blockIdx_].senBlockHeadIdx_].end(),
-						idx);
-					if (it != traceWordBuckets[senWord.blocks_[traceWord.blockIdx_].senBlockHeadIdx_].end())
-						traceWordBuckets[senWord.blocks_[traceWord.blockIdx_].senBlockHeadIdx_].erase(it);
+					if (traceWord.traceNodePtr_) {
+						traceWordBuckets[senWord.blocks_[traceWord.blockIdx_].senBlockHeadIdx_].DelNode(traceWord.traceNodePtr_);
+						traceWord.traceNodePtr_ = nullptr;
+					}
 
-					traceBucket.push_back(idx);
+					{
+						BucketNode* tempNodePtr = traceWordBuckets[headIdx].AddNode(nextNodePtr->idx_, headIdx);
+						traceWord.traceNodePtr_ = tempNodePtr;
+						if (headIdx != senWord.blocks_[traceWord.blockIdx_ + 1].senBlockHeadIdx_)
+							return;
+					}
+	
+					eraseIdx.push_back(nextNodePtr->idx_);
 
-					eraseIdx.push_back(idx);
+					auto tempNodePtr = nextNodePtr->nextNode_;
+					traceNextWordBuckets[headIdx].DelNode(nextNodePtr);
+					nextNodePtr = tempNodePtr;
 
 					traceWord.blockIdx_ += 1;
 					traceWord.wordIdx_ = static_cast<int>(i + senWord.blocks_[traceWord.blockIdx_].block_.length());
 					traceWord.wordIdxRec_[traceWord.blockIdx_].push_back(static_cast<int>(i));
+					assert(static_cast<int>(i) <= 84065);
 				}
 				else{
-					reserveIdx.push_back(idx);
+					nextNodePtr = nextNodePtr->nextNode_;
 				}
-			}
-
-			if(!eraseIdx.empty()){
-				traceNextBucket = reserveIdx;
 			}
 
 			for (auto idx : eraseIdx) {
 				auto& traceWord = traceWords[idx];
 				auto& senWord = gSenWords[traceWord.senWordIdx_];
 
-				if (traceWord.blockIdx_ + 1 < senWord.BlockAmount()) {
-					traceNextWordBuckets[senWord.blocks_[traceWord.blockIdx_ + 1].senBlockHeadIdx_].push_back(idx);
+				if (traceWord.blockIdx_ + 1 < senWord.BlockAmount()
+					&& traceWord.wordIdxRec_[traceWord.blockIdx_].size() == senWord.blocks_[traceWord.blockIdx_].times_) {
+					traceNextWordBuckets[senWord.blocks_[traceWord.blockIdx_ + 1].senBlockHeadIdx_].AddNode(idx, senWord.blocks_[traceWord.blockIdx_ + 1].senBlockHeadIdx_);
 				}
 			}
 
@@ -292,12 +459,18 @@ void FilterWord(string& src, string& dest)
 					auto& traceWord = traceWords.back();
 					traceWord.wordIdx_ = static_cast<int>(i + senWord.blocks_[0].block_.length());
 					traceWord.wordIdxRec_[traceWord.blockIdx_].push_back(static_cast<int>(i));
+					assert(static_cast<int>(i) <= 84065);
 
-					traceWordBuckets[headIdx].push_back(static_cast<int>(traceWords.size() - 1));
+					{
+						BucketNode* tempNodePtr = traceWordBuckets[headIdx].AddNode(static_cast<int>(traceWords.size() - 1), headIdx);
+						traceWord.traceNodePtr_ = tempNodePtr;
+						if (senWord.blocks_[traceWord.blockIdx_].senBlockHeadIdx_ != headIdx)
+							return;
+					}
 
 					if (senWord.BlockAmount() > 1
 						&& traceWord.wordIdxRec_[traceWord.blockIdx_].size() >= senWord.blocks_[traceWord.blockIdx_].times_){
-						traceNextWordBuckets[senWord.blocks_[traceWord.blockIdx_+1].senBlockHeadIdx_].push_back(static_cast<int>(traceWords.size() - 1));
+						traceNextWordBuckets[senWord.blocks_[traceWord.blockIdx_ + 1].senBlockHeadIdx_].AddNode(static_cast<int>(traceWords.size() - 1), senWord.blocks_[traceWord.blockIdx_ + 1].senBlockHeadIdx_);
 					}
 				}
 			}
@@ -378,9 +551,10 @@ void TestFilterWord()
 		size_t filterAmount = words.size() / thrAmount + 1;
 		for (int i = 0; i < thrAmount; ++i) {
 			thrs.emplace_back([i, filterAmount, &words, &dests]()->void {
+				RecycleNodes recycleNodes;
 				string dest;
 				for (size_t j = i * filterAmount; j < (i + 1)*filterAmount && j < words.size(); ++j) {
-					FilterWord(words[j], dests[j]);
+					FilterWord(words[j], dests[j], recycleNodes);
 				}
 			});
 		}
