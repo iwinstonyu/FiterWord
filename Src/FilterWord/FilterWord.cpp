@@ -95,7 +95,7 @@ struct BucketNode
 
 struct RecycleNodes
 {
-	static const int RESERVE_NODES_SIZE = 1000;
+	static const int RESERVE_NODES_SIZE = 10000;
 
 	RecycleNodes()
 	{
@@ -181,8 +181,6 @@ struct BucketNodeList
 
 	BucketNode* AddNode(int idx, int headIdx)
 	{
-		++amount_;
-
 		BucketNode* nodePtr = recycleNodesPtr_->NewNode(idx, headIdx);
 
 		if (headPtr_ == nullptr)
@@ -202,8 +200,6 @@ struct BucketNodeList
 
 	void DelNode(BucketNode* nodePtr)
 	{
-		--amount_;
-
 		assert(nodePtr);
 		assert(nodePtr->idx_ >= 0);
 
@@ -228,7 +224,6 @@ struct BucketNodeList
 	BucketNode* headPtr_ = nullptr;
 	BucketNode* tailPtr_ = nullptr;
 	RecycleNodes* recycleNodesPtr_;
-	int amount_ = 0;
 };
 
 vector<SenWord> gSenWords;
@@ -348,7 +343,6 @@ void InitSenWords()
 
 void FilterWord(string& src, string& dest, RecycleNodes& recycleNodes)
 {
-
 	dest = src;
 
 	vector<TraceWord> traceWords;

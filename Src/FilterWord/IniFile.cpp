@@ -345,7 +345,7 @@ void IniFile::LoadFile()
 			auto it = section.profileIdx_.find(profile.key_);
 			if (it == section.profileIdx_.end()) {
 				section.profiles_.push_back(profile);
-				section.profileIdx_[profile.key_] = section.profiles_.size() - 1;
+				section.profileIdx_[profile.key_] = static_cast<int>(section.profiles_.size() - 1);
 			}
 			else {
 				INI_WRITE_ERROR << "Duplicated key in section: " << fileName_ << " " << lineno << " "<< section.name_ << " " << profile.key_;
